@@ -59,3 +59,11 @@ Generate complete working code for:
 * training script
 * grad-cam module
 * streamlit app
+
+## Training Code Rules
+- Always use callbacks: EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+- Always monitor val_recall as primary metric (medical AI priority)
+- Never change model architecture unless explicitly asked
+- Never modify Streamlit app.py during training tasks
+- Always print class weights before training starts
+- Save model as best_model.h5, not model.h5

@@ -29,9 +29,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # Import from sibling modules in app/ (Streamlit adds app/ to sys.path)
-from predict import load_model, preprocess_image, predict, validate_image as validate_image_format
+from predict import load_model, preprocess_image, predict, validate_image as validate_image_format, THRESHOLD
 from validator import validate_image as ai_validate_image
 from model.gradcam import generate_gradcam
+from streamlit_option_menu import option_menu
+
+def get_chart_style():
+    # Returns matplotlib style params that match current theme
+    return {
+        'facecolor': '#0e1117',   # Streamlit dark bg
+        'axes_facecolor': '#1a1f2e',
+        'text_color': '#ffffff',
+        'grid_color': '#2d3748',
+        'spine_color': '#2d3748',
+    }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 OUTPUTS_DIR    = ROOT / "outputs"
@@ -191,8 +202,24 @@ def render_header():
         """,
         unsafe_allow_html=True,
     )
+    st.markdown("""
+    <div style="
+      border: 1px solid #f59e0b;
+      border-left: 4px solid #f59e0b;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      background-color: var(--secondary-background-color);
+      color: var(--text-color);
+      font-size: 0.875rem;
+    ">
+      ⚠️ <strong>Disclaimer:</strong> This tool is for educational purposes only 
+      and is not a substitute for professional medical advice, diagnosis, or 
+      treatment. Always consult a qualified healthcare provider.
+    </div>
+    """, unsafe_allow_html=True)
 
-    with st.expander("⚙️ Settings", expanded=False):
+    with st.expander("⚙️ Settings — Configure model threshold and display options", expanded=False):
         choice = st.selectbox(
             "Model version",
             options=list(MODEL_OPTIONS.keys()),
@@ -320,30 +347,81 @@ def render_prediction_card(prediction: dict):
     )
     st.write("")
 
-    # Dual probability metrics side-by-side
-    m1, m2 = st.columns(2)
-    with m1:
-        st.metric(label="🔴 Cancer Probability",     value=f"{conf_pct}%")
-    with m2:
-        st.metric(label="🟢 Non-Cancer Probability", value=f"{non_cancer_pct}%")
+    st.markdown(f"""
+    <div style="display: flex; gap: 40px; margin: 16px 0;">
+      <div>
+        <div style="color: #a0a0a0; font-size: 0.8rem; margin-bottom: 4px;">
+          🔴 Cancer Probability
+        </div>
+        <div style="color: #ef4444; font-size: 2.5rem; font-weight: 700;">
+          {prob*100:.1f}%
+        </div>
+      </div>
+      <div>
+        <div style="color: #a0a0a0; font-size: 0.8rem; margin-bottom: 4px;">
+          🟢 Non-Cancer Probability
+        </div>
+        <div style="color: #22c55e; font-size: 2.5rem; font-weight: 700;">
+          {(1-prob)*100:.1f}%
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Cancer probability progress bar
-    st.progress(int(conf_pct))
+    # Dual-color progress bar
+    st.markdown(f"""
+    <div style="margin: 12px 0 20px 0;">
+      <div style="
+        height: 12px; 
+        border-radius: 6px; 
+        background: #22c55e;
+        overflow: hidden;
+        position: relative;
+      ">
+        <div style="
+          position: absolute; left: 0; top: 0;
+          width: {prob*100:.1f}%;
+          height: 100%;
+          background: #ef4444;
+          border-radius: 6px 0 0 6px;
+        "></div>
+      </div>
+      <div style="
+        display: flex; 
+        justify-content: space-between; 
+        margin-top: 4px;
+        font-size: 0.75rem; 
+        color: #a0a0a0;
+      ">
+        <span>← Cancer</span>
+        <span>Non-Cancer →</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # Raw sigmoid detail
-    st.caption(
-        f"Raw sigmoid output: **{prob:.4f}** — "
-        f"Likely Cancer: **>0.75** | Uncertain: **0.55–0.75** | Likely Non-Cancer: **≤0.55**"
-    )
+    with st.expander("🔬 Technical Details"):
+        # Dynamic threshold logic boundaries based on app/predict.py
+        uncertain_low  = THRESHOLD - 0.15
+        uncertain_high = THRESHOLD + 0.20
 
-    # Threshold guide
-    st.info(
-        "🔴 **Likely Cancer** (prob > 0.75)  |  "
-        "🟡 **Uncertain** (0.55 – 0.75)  |  "
-        "🟢 **Likely Non-Cancer** (≤ 0.55)"
-    )
+        # Raw sigmoid detail
+        st.caption(
+            f"Decision threshold: {THRESHOLD:.2f} (optimized via Youden's J statistic on validation set)<br>"
+            f"Raw sigmoid output: **{prob:.4f}** — "
+            f"Likely Cancer: **≥{uncertain_high:.2f}** | "
+            f"Uncertain: **{uncertain_low:.2f}–{uncertain_high:.2f}** | "
+            f"Likely Non-Cancer: **<{uncertain_low:.2f}**",
+            unsafe_allow_html=True
+        )
+    
+        # Threshold guide
+        st.info(
+            f"🔴 **Likely Cancer** (prob ≥ {uncertain_high:.2f})  |  "
+            f"🟡 **Uncertain** ({uncertain_low:.2f} – {uncertain_high:.2f})  |  "
+            f"🟢 **Likely Non-Cancer** (< {uncertain_low:.2f})"
+        )
 
 
 def render_explainability():
@@ -361,60 +439,133 @@ def render_explainability():
 
     with col1:
         st.image(pil_img, caption="Original Image", width="stretch")
-        st.markdown(
-            "<div class='img-caption'>Uploaded histopathology patch</div>",
-            unsafe_allow_html=True,
-        )
 
     with col2:
         st.image(overlay_rgb, caption="Grad-CAM Heatmap", width="stretch")
-        st.markdown(
-            "<div class='img-caption'>Red/yellow = high gradient activation</div>",
-            unsafe_allow_html=True,
-        )
 
-    st.caption(
-        "The heatmap highlights regions that most influenced the model's prediction. "
-        "Warm colours indicate areas of high importance. "
-        "This visualisation is generated using Gradient-weighted Class Activation Mapping (Grad-CAM)."
+    st.markdown(
+        "<p style='text-align: center; color: #64748b; font-size: 0.9rem; margin-top: 10px;'>"
+        "🔴 Red/yellow areas indicate regions the model focused on to make its prediction."
+        "</p>",
+        unsafe_allow_html=True,
     )
 
 
+def section_header(title, subtitle=""):
+    st.markdown(f"""
+    <div style="
+        border-left: 4px solid #6366f1;
+        padding: 8px 0 8px 16px;
+        margin: 24px 0 12px 0;
+    ">
+        <div style="font-weight: 600; font-size: 1rem; 
+        color: var(--text-color);">{title}</div>
+        <div style="font-size: 0.8rem; color: #6b7280;">
+        {subtitle}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 def render_model_insights():
-    """Section 4 — Loss curve + Metrics (always visible)."""
+    """Section 4 — Loss curve + Metrics (vertical flow)."""
     st.markdown("---")
     st.subheader("📊 Model Insights")
 
-    col1, col2 = st.columns(2)
+    # Step 1: Model Performance
+    section_header("Model Performance", "Validation metrics from training phase")
 
-    with col1:
-        st.markdown("**Gradient Descent Optimization**")
-        loss_path = OUTPUTS_DIR / "loss.png"
-        if loss_path.exists():
-            st.image(str(loss_path), caption="Training & Validation Loss", width="stretch")
+    st.markdown(f"""
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0;">
+      <div style="background: var(--secondary-background-color); border: 1px solid #2d3748; border-radius: 8px; padding: 16px;">
+        <div style="color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px;">Accuracy</div>
+        <div style="color: #60a5fa; font-size: 1.8rem; font-weight: 700; margin-top: 4px;">73.70%</div>
+      </div>
+      <div style="background: var(--secondary-background-color); border: 1px solid #2d3748; border-radius: 8px; padding: 16px;">
+        <div style="color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px;">Recall</div>
+        <div style="color: #34d399; font-size: 1.8rem; font-weight: 700; margin-top: 4px;">75.20%</div>
+      </div>
+      <div style="background: var(--secondary-background-color); border: 1px solid #2d3748; border-radius: 8px; padding: 16px;">
+        <div style="color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px;">Precision</div>
+        <div style="color: #f472b6; font-size: 1.8rem; font-weight: 700; margin-top: 4px;">73.01%</div>
+      </div>
+      <div style="background: var(--secondary-background-color); border: 1px solid #2d3748; border-radius: 8px; padding: 16px;">
+        <div style="color: #6b7280; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px;">F1-Score</div>
+        <div style="color: #fbbf24; font-size: 1.8rem; font-weight: 700; margin-top: 4px;">74.09%</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Step 2: Training Curves
+    section_header("Training Curves", "Loss and accuracy over 8 epochs")
+    loss_path = OUTPUTS_DIR / "loss.png"
+    if loss_path.exists():
+        st.image(str(loss_path), caption="Training & Validation Loss", width="stretch")
+    else:
+        st.warning("⚠️ `outputs/loss.png` not found.")
+
+    st.info(
+        "This graph shows how the model minimised binary cross-entropy loss "
+        "using gradient descent (∇L). The optimiser adjusts weights in the "
+        "direction of steepest descent: **W ← W − α · ∇L**"
+    )
+
+    with st.expander("📈 Accuracy Curve"):
+        acc_path = OUTPUTS_DIR / "accuracy.png"
+        if acc_path.exists():
+            st.image(str(acc_path), caption="Training & Validation Accuracy", width="stretch")
         else:
-            st.warning("⚠️ `outputs/loss.png` not found.")
+            st.warning("⚠️ `outputs/accuracy.png` not found.")
 
-        st.info(
-            "This graph shows how the model minimised binary cross-entropy loss "
-            "using gradient descent (∇L). The optimiser adjusts weights in the "
-            "direction of steepest descent: **W ← W − α · ∇L**"
-        )
+    # Step 3: Confusion Matrix
+    section_header("Confusion Matrix", "Prediction breakdown on validation set")
+    with st.expander("🧩 Confusion Matrix"):
+        import matplotlib.pyplot as plt
+        try:
+            import seaborn as sns
+        except ImportError:
+            sns = None
+            
+        fig, ax = plt.subplots(figsize=(6, 4))
+        
+        # Transparent backgrounds
+        fig.patch.set_alpha(0)
+        ax.patch.set_alpha(0)
+        ax.tick_params(colors='gray')
+        ax.xaxis.label.set_color('gray')
+        ax.yaxis.label.set_color('gray')
+        ax.title.set_color('gray')
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#cccccc')
 
-    with col2:
-        st.markdown("**Model Performance**")
-        st.caption("Validation Metrics (from training phase — not per-image)")
-
-        st.metric("Accuracy",  METRICS["accuracy"])
-        st.metric("Precision", METRICS["precision"])
-        st.metric("Recall",    METRICS["recall"])
-
-        with st.expander("📈 Accuracy Curve"):
-            acc_path = OUTPUTS_DIR / "accuracy.png"
-            if acc_path.exists():
-                st.image(str(acc_path), caption="Training & Validation Accuracy", width="stretch")
-            else:
-                st.warning("⚠️ `outputs/accuracy.png` not found.")
+        cm = np.array([[14256, 4238], [5512, 16734]])
+        
+        if sns:
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                        linewidths=0.5, linecolor='gray', ax=ax,
+                        cbar_kws={'label': 'Count'})
+            cbar = ax.collections[0].colorbar
+            cbar.ax.yaxis.set_tick_params(color='gray')
+            cbar.ax.yaxis.label.set_color('gray')
+            plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='gray')
+        else:
+            cax = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+            for i in range(2):
+                for j in range(2):
+                    ax.text(j, i, str(cm[i, j]), horizontalalignment="center",
+                            color="white" if cm[i, j] > cm.max()/2 else "black", fontsize=9)
+            
+        ax.set_title("Confusion Matrix (Validation Set)", fontsize=10)
+        tick_marks = np.arange(2) + (0.5 if sns else 0)
+        ax.set_xticks(tick_marks)
+        ax.set_xticklabels(['Non-Cancer', 'Cancer'], fontsize=9)
+        ax.set_yticks(tick_marks)
+        ax.set_yticklabels(['Non-Cancer', 'Cancer'], fontsize=9, rotation=90, va='center')
+        ax.set_xlabel('Predicted Label', fontsize=10)
+        ax.set_ylabel('True Label', fontsize=10)
+        ax.legend(framealpha=0.3)
+        
+        fig.tight_layout()
+        st.pyplot(fig)
 
 
 def render_report_section():
@@ -447,10 +598,6 @@ def render_report_section():
 
     if st.session_state.get("pdf_bytes"):
         with col2:
-            # DEBUG STEP (MANDATORY)
-            st.write(type(st.session_state["pdf_bytes"]))
-            st.write(len(st.session_state["pdf_bytes"]))
-            
             st.download_button(
                 label="📥 Download PDF",
                 data=st.session_state["pdf_bytes"],
@@ -541,91 +688,171 @@ def main():
     # ── Section 1: Header ────────────────────────────────────────────────────
     render_header()
 
-    # ── Section 2: Upload + Prediction ───────────────────────────────────────
-    col_upload, col_pred = st.columns([1, 1], gap="large")
+    selected = option_menu(
+        menu_title=None,
+        options=["Detect", "Model Insights", "Report", "About"],
+        icons=["search", "bar-chart-line", "file-earmark-text", "info-circle"],
+        orientation="horizontal",
+        styles={
+            "container": {
+                "padding": "4px",
+                "background-color": "transparent",
+                "border": "1px solid rgba(255,255,255,0.1)",
+                "border-radius": "10px",
+            },
+            "icon": {
+                "font-size": "14px",
+            },
+            "nav-link": {
+                "font-size": "14px",
+                "text-align": "center",
+                "padding": "10px 20px",
+                "border-radius": "8px",
+                "background-color": "transparent",
+                "color": "var(--text-color)",
+            },
+            "nav-link-hover": {
+                "background-color": "rgba(99, 102, 241, 0.15)",
+            },
+            "nav-link-selected": {
+                "background-color": "#6366f1",
+                "color": "white",
+                "font-weight": "600",
+            },
+        }
+    )
 
-    with col_upload:
-        image_ready = render_upload_section()
+    st.markdown("""
+    <style>
+      /* Fix option menu container background */
+      nav[data-testid="stHorizontalBlock"],
+      .nav-link, ul[class*="nav"] {
+        background-color: transparent !important;
+      }
+      
+      /* Fix the white box around the whole menu */
+      div[data-testid="stHorizontalBlock"] > div {
+        background-color: transparent !important;
+      }
 
-    # Auto-trigger validation + analysis when image is ready
-    if image_ready and st.session_state["prediction_result"] is None:
+      /* Fix upload button color in dark mode */
+      [data-testid="stFileUploaderDropzone"] {
+        background-color: var(--secondary-background-color) !important;
+        border: 1px solid rgba(255,255,255,0.15) !important;
+      }
 
-        # ── Step A: AI image validation (cached per image) ─────────────────
-        if st.session_state["image_validation"] is None:
-            with st.spinner("🔍 Validating image…"):
-                api_key = None
-                try:
-                    api_key = st.secrets.get("AI_API_KEY", None)
-                except Exception:
-                    pass
-                st.session_state["image_validation"] = ai_validate_image(
-                    st.session_state["uploaded_image"], api_key
+      /* Fix all expander headers */
+      [data-testid="stExpander"] {
+        background-color: var(--secondary-background-color) !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        border-radius: 8px !important;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
+    if selected == "Detect":
+        st.markdown("### 🔬 Cancer Detection")
+        st.caption("Upload a histopathology image to analyze for IDC cancer")
+
+        # ── Section 2: Upload + Prediction ───────────────────────────────────────
+        col_upload, col_pred = st.columns([1, 1], gap="large")
+
+        with col_upload:
+            image_ready = render_upload_section()
+
+        # Auto-trigger validation + analysis when image is ready
+        if image_ready and st.session_state["prediction_result"] is None:
+
+            # ── Step A: AI image validation (cached per image) ─────────────────
+            if st.session_state["image_validation"] is None:
+                with st.spinner("🔍 Validating image…"):
+                    api_key = None
+                    try:
+                        api_key = st.secrets.get("AI_API_KEY", None)
+                    except Exception:
+                        pass
+                    st.session_state["image_validation"] = ai_validate_image(
+                        st.session_state["uploaded_image"], api_key
+                    )
+
+            val = st.session_state["image_validation"]
+
+            if val["skipped"]:
+                # API unavailable — show warning but proceed
+                st.warning(
+                    f"⚠️ Validation unavailable — proceeding with prediction. "
+                    f"({val['label']})"
+                )
+            elif not val["is_valid"]:
+                # Definitely not a medical image — stop here
+                with col_pred:
+                    st.error(
+                        f"❌ Invalid input detected: **{val['label']}**  "
+                        f"(confidence {val['confidence']:.0%}).\n\n"
+                        "Please upload a **medical histopathology image**."
+                    )
+                return  # do not run analysis
+
+            # ── Step B: Run ML analysis ─────────────────────────────────────────
+            model_path = MODEL_OPTIONS[st.session_state["model_choice"]]
+            _run_analysis(st.session_state["uploaded_image"], model_path)
+            
+            # Map prediction session var natively
+            if st.session_state["prediction_result"] is not None:
+                st.session_state['prediction'] = {
+                    'cancer_prob': st.session_state["prediction_result"]["probability"],
+                    'label': st.session_state["prediction_result"]["label"],
+                    'confidence': st.session_state["prediction_result"]["confidence_pct"],
+                    'image': st.session_state["uploaded_image"]
+                }
+            st.rerun()
+
+        with col_pred:
+            # Show validation badge if a result exists
+            val = st.session_state.get("image_validation")
+            if val and not val["skipped"] and val["is_valid"]:
+                st.success(
+                    f"✅ Image validated as medical image "
+                    f"({val['confidence']:.0%} confidence)"
                 )
 
-        val = st.session_state["image_validation"]
-
-        if val["skipped"]:
-            # API unavailable — show warning but proceed
-            st.warning(
-                f"⚠️ Validation unavailable — proceeding with prediction. "
-                f"({val['label']})"
-            )
-        elif not val["is_valid"]:
-            # Definitely not a medical image — stop here
-            with col_pred:
-                st.error(
-                    f"❌ Invalid input detected: **{val['label']}**  "
-                    f"(confidence {val['confidence']:.0%}).\n\n"
-                    "Please upload a **medical histopathology image**."
+            if st.session_state["prediction_result"] is not None:
+                render_prediction_card(st.session_state["prediction_result"])
+            elif st.session_state["uploaded_image"] is not None:
+                # Image uploaded but analysis still running (first pass)
+                st.info("🔄 Running analysis…")
+            else:
+                st.markdown(
+                    "<div style='color:#94a3b8; padding-top:40px; text-align:center;'>"
+                    "Upload or select an image to see the prediction.</div>",
+                    unsafe_allow_html=True,
                 )
-            return  # do not run analysis
 
-        # ── Step B: Run ML analysis ─────────────────────────────────────────
-        model_path = MODEL_OPTIONS[st.session_state["model_choice"]]
-        _run_analysis(st.session_state["uploaded_image"], model_path)
-        st.rerun()
+        # ── Section 3: Explainability ─────────────────────────────────────────────
+        if (
+            st.session_state["prediction_result"] is not None
+            and st.session_state["gradcam_overlay"] is not None
+        ):
+            render_explainability()
 
-    with col_pred:
-        # Show validation badge if a result exists
-        val = st.session_state.get("image_validation")
-        if val and not val["skipped"] and val["is_valid"]:
-            st.success(
-                f"✅ Image validated as medical image "
-                f"({val['confidence']:.0%} confidence)"
-            )
+    elif selected == "Model Insights":
+        st.markdown("### 📊 Model Insights")
+        st.caption("Training metrics and performance evaluation")
+        render_model_insights()
 
-        if st.session_state["prediction_result"] is not None:
-            render_prediction_card(st.session_state["prediction_result"])
-        elif st.session_state["uploaded_image"] is not None:
-            # Image uploaded but analysis still running (first pass)
-            st.info("🔄 Running analysis…")
+    elif selected == "Report":
+        st.markdown("### 📄 Report")
+        st.caption("Generate and download a PDF report of the last prediction")
+        if st.session_state.get("prediction_result") is None:
+            st.info("No prediction yet. Go to the Detect tab and upload an image first.")
         else:
-            st.markdown(
-                "<div style='color:#94a3b8; padding-top:40px; text-align:center;'>"
-                "Upload or select an image to see the prediction.</div>",
-                unsafe_allow_html=True,
-            )
+            render_report_section()
 
-    # ── Section 3: Explainability ─────────────────────────────────────────────
-    if (
-        st.session_state["prediction_result"] is not None
-        and st.session_state["gradcam_overlay"] is not None
-    ):
-        render_explainability()
-
-    # ── Section 4: Model Insights (always visible) ───────────────────────────
-    render_model_insights()
-
-    # ── Section 5: Report (only after prediction) ────────────────────────────
-    if st.session_state["prediction_result"] is not None:
-        render_report_section()
-
-    # ── Section 6: Info (always visible, collapsed) ──────────────────────────
-    render_info_section()
-
-    # ── Section 7: Footer (always visible) ───────────────────────────────────
-    render_footer()
-
+    elif selected == "About":
+        st.markdown("### ℹ️ About This System")
+        st.caption("How the model works, dataset info, and limitations")
+        render_info_section()
+        render_footer()
 
 if __name__ == "__main__":
     main()

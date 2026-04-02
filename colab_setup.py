@@ -234,7 +234,56 @@ print("✅ Source files found")
 import sys
 sys.path.insert(0, str(DRIVE_ROOT))
 
-from model.utils import create_image_generators
+# ─────────────────────────────────────────────────────────────────────────────
+# CELL 15 — IMPROVED AUGMENTATION
+# Replace existing ImageDataGenerator with this
+# ─────────────────────────────────────────────────────────────────────────────
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+IMG_SIZE   = 96     # keep existing size
+BATCH_SIZE = 32     # keep existing batch size
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=20,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    horizontal_flip=True,
+    vertical_flip=True,
+    zoom_range=0.15,
+    brightness_range=[0.8, 1.2],    # NEW: brightness variation
+    channel_shift_range=10.0,        # NEW: slight color noise
+    fill_mode='nearest',
+    validation_split=0.2
+)
+
+# Validation: ONLY rescale, no augmentation
+val_datagen = ImageDataGenerator(
+    rescale=1./255,
+    validation_split=0.2
+)
+
+train_gen = train_datagen.flow_from_directory(
+    str(DRIVE_DATASET),
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    class_mode='binary',
+    subset='training',
+    seed=42
+)
+
+val_gen = val_datagen.flow_from_directory(
+    str(DRIVE_DATASET),
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    class_mode='binary',
+    subset='validation',
+    seed=42
+)
+
+print(f"✅ Augmented train generator: {train_gen.samples:,} images")
+print(f"✅ Clean val generator      : {val_gen.samples:,} images")
+\n\nfrom model.utils import create_image_generators
 
 print("🔍 Validating data pipeline...")
 train_gen, val_gen = create_image_generators(
@@ -537,3 +586,81 @@ plt.show()
 
 print(f"\n✅ Fine-tuned model saved → {finetuned_path}")
 print("   To use it in Grad-CAM / app.py, update MODEL_PATH to point to best_model_finetuned.h5")
+\n\n# ─────────────────────────────────────────────────────────────────────────────
+# CELL 16 — COMPUTE OPTIMAL DECISION THRESHOLD
+# Run after fine-tuning (Cell 13) is complete
+# ─────────────────────────────────────────────────────────────────────────────
+import numpy as np
+import json
+from sklearn.metrics import roc_curve, f1_score
+
+print("Computing optimal threshold from validation set...")
+
+# Load finetuned model
+finetuned_path = str(DRIVE_OUTPUT / "best_model_finetuned.h5")
+threshold_model = tf.keras.models.load_model(finetuned_path)
+
+# Get predictions on full validation set
+val_gen.reset()
+val_preds = threshold_model.predict(val_gen, verbose=1)
+val_labels = val_gen.classes[:len(val_preds)]
+
+# Method 1: Best F1 Score threshold
+thresholds = np.arange(0.3, 0.85, 0.01)
+f1_scores  = []
+for t in thresholds:
+    preds = (val_preds.flatten() > t).astype(int)
+    f1_scores.append(f1_score(val_labels, preds))
+
+best_f1_threshold = thresholds[np.argmax(f1_scores)]
+
+# Method 2: Youden's J (best for medical — balances sensitivity/specificity)
+fpr, tpr, roc_thresholds = roc_curve(val_labels, val_preds)
+youden_j = tpr - fpr
+best_youden_threshold = float(roc_thresholds[np.argmax(youden_j)])
+
+print("=" * 50)
+print("THRESHOLD OPTIMIZATION RESULTS")
+print("=" * 50)
+print(f"Best F1 threshold       : {best_f1_threshold:.2f}")
+print(f"Best Youden's J thresh  : {best_youden_threshold:.2f}")
+print(f"\nRecommended (Youden's J): {best_youden_threshold:.2f}")
+print("(Youden's J preferred for cancer detection —")
+print(" minimizes missed cancers)")
+print("=" * 50)
+
+# Save to Drive alongside model
+threshold_data = {
+    'threshold': best_youden_threshold,
+    'f1_threshold': float(best_f1_threshold),
+    'method': "Youden's J statistic",
+    'note': 'Use threshold value in app.py prediction logic'
+}
+
+threshold_path = DRIVE_OUTPUT / "model_threshold.json"
+with open(threshold_path, 'w') as f:
+    json.dump(threshold_data, f, indent=2)
+
+print(f"\n✅ Threshold saved to: {threshold_path}")
+print(f"   Update THRESHOLD in app.py to: {best_youden_threshold:.2f}")
+\n\n# ─────────────────────────────────────────────────────────────────────────────
+# CELL 17 — FINAL TRAINING SUMMARY
+# ─────────────────────────────────────────────────────────────────────────────
+print("=" * 55)
+print("  FINAL TRAINING SUMMARY")
+print("=" * 55)
+print(f"\n  Phase 1 val accuracy   : {phase1_val_acc*100:.2f}%")
+print(f"  Phase 2 val accuracy   : {phase2_val_acc*100:.2f}%")
+delta = (phase2_val_acc - phase1_val_acc) * 100
+print(f"  Improvement            : +{delta:.2f}%")
+print(f"\n  Optimal threshold      : {best_youden_threshold:.2f}")
+print(f"\n  Files saved to Drive:")
+for f in sorted(DRIVE_OUTPUT.iterdir()):
+    size_kb = f.stat().st_size / 1024
+    print(f"    {f.name:30s} {size_kb:>8.1f} KB")
+print("\n  Next steps:")
+print("  1. Copy best_model_finetuned.h5 to your app folder")
+print("  2. Copy model_threshold.json to your app folder")
+print(f"  3. Set THRESHOLD = {best_youden_threshold:.2f} in app.py")
+print("  4. Run: streamlit run app.py")
+print("=" * 55)

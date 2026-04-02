@@ -19,9 +19,28 @@ from PIL import Image
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Constants
+# Constants & Threshold Config
 # ─────────────────────────────────────────────────────────────────────────────
 IMG_SIZE = (224, 224)
+
+import json
+from pathlib import Path
+
+# Resolve ROOT and look for outputs/model_threshold.json
+ROOT = Path(__file__).resolve().parent.parent
+threshold_path = ROOT / "outputs" / "model_threshold.json"
+
+if threshold_path.exists():
+    with open(threshold_path) as f:
+        threshold_data = json.load(f)
+    THRESHOLD = threshold_data['threshold']
+    # If the threshold is less than 0.20 or greater than 0.80, perhaps bound it
+    # to avoid unreasonable classification boundaries.
+    print(f"Loaded threshold: {THRESHOLD:.2f}")
+else:
+    THRESHOLD = 0.53  # fallback default
+    print("Warning: outputs/model_threshold.json not found, using default 0.53")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -67,46 +86,32 @@ def preprocess_image(image: Image.Image) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Inference
 # ─────────────────────────────────────────────────────────────────────────────
+def get_prediction_label(prob, threshold=THRESHOLD):
+    uncertain_low  = threshold - 0.15   # ~0.38
+    uncertain_high = threshold + 0.20   # ~0.73
+
+    if prob >= uncertain_high:
+        return "Likely Cancer", "High", "cancer"
+    elif prob >= threshold:
+        return "Likely Cancer", "Low-Medium", "cancer"
+    elif prob >= uncertain_low:
+        return "Uncertain / Inconclusive", "Medium", "uncertain"
+    else:
+        return "Likely Non-Cancer", "High", "non-cancer"
+
 def predict(model, img_array: np.ndarray) -> dict:
     """
     Run binary cancer detection inference on a pre-processed image array.
-
-    Decision logic
-    --------------
-    THRESHOLD = 0.65  (raised from 0.5 to reduce false positives)
-
-    prob > 0.75  → "Model Assessment: Likely Cancer"    (High confidence)
-    prob > 0.55  → "Model Assessment: Uncertain"         (Medium — borderline)
-    otherwise    → "Model Assessment: Likely Non-Cancer" (Low cancer probability)
-
-    Args:
-        model:     Loaded tf.keras.Model (sigmoid output head)
-        img_array: np.ndarray shape (1, 224, 224, 3)
-
-    Returns:
-        dict with keys:
-            probability          – float in [0, 1], cancer probability
-            non_cancer_prob      – float in [0, 1], i.e. 1 - probability
-            label                – human-readable assessment string
-            confidence_pct       – cancer probability as percentage
-            non_cancer_pct       – non-cancer probability as percentage
-            confidence_level     – "High" | "Medium" | "Low"
     """
-    THRESHOLD = 0.65
-
     raw = model.predict(img_array, verbose=0)
     probability = float(raw[0][0])
     non_cancer_prob = 1.0 - probability
 
-    if probability > 0.75:
-        label = "Model Assessment: Likely Cancer"
-        level = "High"
-    elif probability > 0.55:
-        label = "Model Assessment: Uncertain"
-        level = "Medium"
-    else:
-        label = "Model Assessment: Likely Non-Cancer"
-        level = "Low"
+    short_label, level, _ = get_prediction_label(probability)
+    # Add "Model Assessment: " prefix to maintain compatibility with the UI
+    label = f"Model Assessment: {short_label}"
+    if short_label == "Uncertain / Inconclusive":
+        label += " - Please consult a doctor"
 
     return {
         "probability":      probability,

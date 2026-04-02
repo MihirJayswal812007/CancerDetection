@@ -138,7 +138,7 @@ def _add_prediction_page(pdf: "FPDF", image: PILImage.Image, prediction: dict):
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(60, 7, "Prediction:", ln=False)
     pdf.set_font("Helvetica", "", 12)
-    pdf.cell(0, 7, label, ln=True)
+    pdf.cell(0, 7, _safe(label), ln=True)
 
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(60, 7, "Raw Probability:", ln=False)
@@ -148,12 +148,12 @@ def _add_prediction_page(pdf: "FPDF", image: PILImage.Image, prediction: dict):
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(60, 7, "Confidence Score:", ln=False)
     pdf.set_font("Helvetica", "", 12)
-    pdf.cell(0, 7, f"{confidence_pct}%", ln=True)
+    pdf.cell(0, 7, _safe(f"{confidence_pct}%"), ln=True)
 
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(60, 7, "Confidence Level:", ln=False)
     pdf.set_font("Helvetica", "", 12)
-    pdf.cell(0, 7, confidence_level, ln=True)
+    pdf.cell(0, 7, _safe(confidence_level), ln=True)
 
     pdf.ln(4)
     _body(
